@@ -361,35 +361,99 @@ async function fetchSummary() {
   } catch(e) {}
 }
 
-// Fetch partial text separately (very fast poll for real-time feel)
-// The partial area NEVER hides — it always shows either the current partial or the last confirmed text
+// WebSocket for real-time partial text (replaces polling)
 let partialEl = null;
-async function fetchPartial() {
+let ws = null;
+let wsReconnectTimer = null;
+
+function ensurePartialEl() {
+  if (!partialEl) {
+    partialEl = document.createElement('div');
+    partialEl.className = 't-line t-partial';
+    partialEl.innerHTML = '<span class="t-time"></span><span class="t-text"></span>';
+    timeline.parentNode.insertBefore(partialEl, timeline);
+  }
+  return partialEl;
+}
+
+function connectWebSocket() {
+  const wsUrl = 'ws://' + location.hostname + ':8421';
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    console.log('WebSocket connected');
+    if (wsReconnectTimer) { clearInterval(wsReconnectTimer); wsReconnectTimer = null; }
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+
+      if (data.type === 'partial') {
+        const el = ensurePartialEl();
+        el.style.display = '';
+        el.style.opacity = '1';
+        el.querySelector('.t-time').textContent = data.t || '';
+        el.querySelector('.t-text').textContent = data.text;
+        el.scrollTop = el.scrollHeight;
+      } else if (data.type === 'final') {
+        // Fade out partial text — it's been replaced by cleaned sentences below
+        if (partialEl) {
+          partialEl.style.transition = 'opacity 0.5s';
+          partialEl.style.opacity = '0.3';
+        }
+        // Trigger timeline refresh to show new sentences
+        fetchTimeline();
+      } else if (data.type === 'clear_partial') {
+        // Server cleared the partial window after final was emitted
+        if (partialEl) {
+          partialEl.style.transition = 'opacity 0.3s';
+          partialEl.style.opacity = '0';
+          setTimeout(() => {
+            if (partialEl) {
+              partialEl.querySelector('.t-text').textContent = '';
+              partialEl.querySelector('.t-time').textContent = '';
+            }
+          }, 300);
+        }
+      }
+    } catch(e) { console.error('WS parse error:', e); }
+  };
+
+  ws.onclose = () => {
+    console.log('WebSocket disconnected, will retry...');
+    if (!wsReconnectTimer) {
+      wsReconnectTimer = setInterval(() => {
+        if (!ws || ws.readyState === WebSocket.CLOSED) connectWebSocket();
+      }, 2000);
+    }
+  };
+
+  ws.onerror = () => { ws.close(); };
+}
+
+// Fallback: poll /api/partial if WebSocket not available (backward compat)
+async function fetchPartialFallback() {
+  if (ws && ws.readyState === WebSocket.OPEN) return; // WS active, skip poll
   try {
     const res = await fetch('/api/partial?t=' + Date.now());
     const data = await res.json();
-    if (!partialEl) {
-      partialEl = document.createElement('div');
-      partialEl.className = 't-line t-partial';
-      partialEl.innerHTML = '<span class="t-time"></span><span class="t-text"></span>';
-      timeline.parentNode.insertBefore(partialEl, timeline);
-    }
+    const el = ensurePartialEl();
     if (data.text && data.text.length > 0) {
-      partialEl.style.display = '';
-      partialEl.querySelector('.t-time').textContent = data.t || '';
-      partialEl.querySelector('.t-text').textContent = data.text;
-      // Auto-scroll to bottom so latest text is visible
-      partialEl.scrollTop = partialEl.scrollHeight;
+      el.style.display = '';
+      el.querySelector('.t-time').textContent = data.t || '';
+      el.querySelector('.t-text').textContent = data.text;
+      el.scrollTop = el.scrollHeight;
     }
-    // Never hide — always shows last content until naturally replaced
   } catch(e) {}
 }
 
+connectWebSocket();
 setInterval(fetchTimeline, 800);
-setInterval(fetchPartial, 250);
+setInterval(fetchPartialFallback, 1000); // slower fallback poll, WS is primary
 setInterval(fetchSummary, 5000);
 fetchTimeline();
-fetchPartial();
+fetchPartialFallback();
 fetchSummary();
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('lightbox').classList.remove('active'); });

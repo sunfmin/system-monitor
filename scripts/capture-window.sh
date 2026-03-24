@@ -7,6 +7,26 @@ OUTPUT="$1"
 APP_KEYWORD="${2:-}"
 PREV_SCREENSHOT="${3:-}"
 
+# Check for dynamic focus target (set by Claude based on conversation context)
+# .focus_target can contain either a window ID (numeric) or a keyword
+SESSION_DIR="$(dirname "$(dirname "$OUTPUT")")"
+FOCUS_FILE="${SESSION_DIR}/.focus_target"
+FOCUS_WINDOW_ID=""
+if [ -z "$APP_KEYWORD" ] && [ -f "$FOCUS_FILE" ]; then
+    FOCUS_VAL="$(cat "$FOCUS_FILE" 2>/dev/null)"
+    if [[ "$FOCUS_VAL" =~ ^[0-9]+$ ]]; then
+        # It's a window ID - use directly
+        FOCUS_WINDOW_ID="$FOCUS_VAL"
+    else
+        APP_KEYWORD="$FOCUS_VAL"
+    fi
+fi
+
+# If we have a direct window ID, use it
+if [ -n "$FOCUS_WINDOW_ID" ]; then
+    WINDOW_ID="$FOCUS_WINDOW_ID"
+else
+
 # Get window ID using Python + Quartz
 WINDOW_ID=$(python3.11 -c "
 import Quartz
@@ -46,12 +66,19 @@ if not candidates:
 
 result = None
 
-# 1. If user specified a keyword, use it
+# 1. If user specified a keyword, use it (skip terminal windows)
+TERMINAL_APPS = {'ghostty', 'terminal', 'iterm2', 'warp', 'alacritty', 'kitty'}
 if keyword:
-    for c in candidates:
-        if keyword in c['owner'].lower() or keyword in c['name'].lower():
-            result = c['id']
-            break
+    # Prefer browser/app windows over terminals when matching keyword
+    keyword_matches = [c for c in candidates
+                       if (keyword in c['owner'].lower() or keyword in c['name'].lower())
+                       and c['owner'].lower() not in TERMINAL_APPS]
+    if not keyword_matches:
+        # Fall back to any match including terminals
+        keyword_matches = [c for c in candidates
+                           if keyword in c['owner'].lower() or keyword in c['name'].lower()]
+    if keyword_matches:
+        result = keyword_matches[0]['id']
 
 # 2. Auto-detect meeting apps
 if not result:
@@ -80,6 +107,8 @@ if not result:
 
 print(result)
 " 2>/dev/null)
+
+fi  # end of else block (no direct window ID)
 
 TMP_OUTPUT="${OUTPUT}.tmp.png"
 

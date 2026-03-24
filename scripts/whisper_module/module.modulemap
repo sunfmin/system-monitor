@@ -1,0 +1,14 @@
+module CWhisper {
+    header "/opt/homebrew/opt/whisper-cpp/include/whisper.h"
+    link "whisper"
+    export *
+}
+
+module CGGML {
+    header "/opt/homebrew/opt/ggml/include/ggml.h"
+    header "/opt/homebrew/opt/ggml/include/ggml-backend.h"
+    header "/opt/homebrew/opt/ggml/include/ggml-cpu.h"
+    link "ggml"
+    link "ggml-base"
+    export *
+}
