@@ -40,25 +40,28 @@ echo "=== System Monitor ==="
 echo "Session: $SESSION_DIR"
 echo ""
 
-# 1. Whisper.cpp streaming (single-process: ScreenCaptureKit + whisper C API, ~2s latency)
-echo "Starting stream-audio-whisper (single-process, Metal GPU)..."
+# 1. Whisper.cpp streaming (single-process: ScreenCaptureKit + whisper C API + WebSocket)
 WHISPER_BIN="$SCRIPT_DIR/stream-audio-whisper"
-if [ -x "$WHISPER_BIN" ]; then
-    nohup "$WHISPER_BIN" \
-        --model "$SCRIPT_DIR/../models/ggml-small.bin" \
-        --chunk-sec 2 \
-        --final-interval 10 \
-        --partial-file "$SESSION_DIR/live_partial.json" \
-        --raw-file "$SESSION_DIR/live_raw.jsonl" \
-        --t2s-script "$SCRIPT_DIR/t2s.py" \
-        > "$SESSION_DIR/stream.log" 2>&1 &
-    STREAM_PID=$!
-else
-    # Fallback to old pipeline if binary not compiled
-    echo "  (fallback: using stream-whisper-cpp.sh pipeline)"
-    nohup bash "$SCRIPT_DIR/stream-whisper-cpp.sh" "$SESSION_DIR" "$SCRIPT_DIR/../models/ggml-small.bin" 2 5 > "$SESSION_DIR/stream.log" 2>&1 &
-    STREAM_PID=$!
+
+# Auto-compile if binary missing
+if [ ! -x "$WHISPER_BIN" ]; then
+    echo "Binary not found, compiling..."
+    bash "$SCRIPT_DIR/compile.sh"
+    if [ ! -x "$WHISPER_BIN" ]; then
+        echo "ERROR: Compilation failed. Run 'bash $SCRIPT_DIR/compile.sh' manually to see errors."
+        exit 1
+    fi
 fi
+
+echo "Starting stream-audio-whisper (single-process, Metal GPU)..."
+nohup "$WHISPER_BIN" \
+    --model "$SCRIPT_DIR/../models/ggml-small.bin" \
+    --chunk-sec 2 \
+    --final-interval 10 \
+    --raw-file "$SESSION_DIR/live_raw.jsonl" \
+    --t2s-script "$SCRIPT_DIR/t2s.py" \
+    > "$SESSION_DIR/stream.log" 2>&1 &
+STREAM_PID=$!
 echo "$STREAM_PID" > "$SESSION_DIR/.stream.pid"
 
 # 2. Screenshot loop (no audio capture - avoids ScreenCaptureKit conflict)

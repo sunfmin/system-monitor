@@ -2,6 +2,3 @@ models/
 *.pyc
 __pycache__/
 .DS_Store
-# Compiled binaries (platform-specific, rebuild from source)
-scripts/stream-audio-whisper
-scripts/capture-audio

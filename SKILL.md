@@ -212,7 +212,9 @@ swiftc stream-audio-whisper.swift \
     -O -o stream-audio-whisper
 ```
 
-**Fallback:** If the binary is not compiled, `start-session.sh` falls back to `stream-whisper-cpp.sh` (capture-audio --stream → Python → whisper-cli pipeline).
+**Pre-compiled binary:** A pre-compiled arm64 binary for Apple Silicon is included in the repo. It dynamically links to `libwhisper` and `libggml` from Homebrew, so `brew install whisper-cpp` is required even when using the pre-compiled binary.
+
+**Auto-compile:** If the binary is missing, `start-session.sh` automatically runs `compile.sh`. Manual recompile: `bash scripts/compile.sh`
 
 **Key constraints:**
 - **Only ONE ScreenCaptureKit audio stream at a time.** Multiple instances conflict and produce silence.
