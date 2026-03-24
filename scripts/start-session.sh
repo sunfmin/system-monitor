@@ -21,15 +21,25 @@ done
 bash "$SCRIPT_DIR/stop-session.sh" 2>/dev/null
 
 # Force kill ALL remaining related processes regardless of session
-pkill -f "stream-audio-whisper" 2>/dev/null
-pkill -f "web-dashboard.*8420" 2>/dev/null
-pkill -f "capture-window" 2>/dev/null
-pkill -f "capture-audio" 2>/dev/null
+# Use pgrep + grep to exclude our own process tree to avoid self-kill
+_safe_pkill() {
+    local pattern="$1"
+    local signal="${2:--TERM}"
+    local pids
+    pids=$(pgrep -f "$pattern" 2>/dev/null | grep -v -w -e "$$" -e "$PPID" -e "$BASHPID")
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs kill "$signal" 2>/dev/null
+    fi
+}
+_safe_pkill "stream-audio-whisper"
+_safe_pkill "web-dashboard.*8420"
+_safe_pkill "capture-window"
+_safe_pkill "capture-audio"
 sleep 1
 # Double-check and force kill if still alive
-pkill -9 -f "stream-audio-whisper" 2>/dev/null
-pkill -9 -f "web-dashboard.*8420" 2>/dev/null
-pkill -9 -f "capture-window" 2>/dev/null
+_safe_pkill "stream-audio-whisper" -9
+_safe_pkill "web-dashboard.*8420" -9
+_safe_pkill "capture-window" -9
 
 # Create session directory
 if [ -n "$SESSION_NAME" ]; then

@@ -30,13 +30,22 @@ for pidfile in .stream.pid .screenshot.pid .dashboard.pid .monitor.pid; do
 done
 
 # Kill by process name (fallback - covers all related processes from any session)
-pkill -f "stream-audio-whisper" 2>/dev/null
-pkill -f "capture-audio" 2>/dev/null
-pkill -f "stream-vosk" 2>/dev/null
-pkill -f "stream-transcribe" 2>/dev/null
-pkill -f "web-dashboard.*8420" 2>/dev/null
-pkill -f "capture-window" 2>/dev/null
-pkill -f "monitor.sh" 2>/dev/null
+# Use pgrep + grep to exclude our own process tree ($$, $PPID) to avoid self-kill
+_safe_pkill() {
+    local pattern="$1"
+    local pids
+    pids=$(pgrep -f "$pattern" 2>/dev/null | grep -v -w -e "$$" -e "$PPID" -e "$BASHPID")
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs kill ${2:--TERM} 2>/dev/null
+    fi
+}
+_safe_pkill "stream-audio-whisper"
+_safe_pkill "capture-audio"
+_safe_pkill "stream-vosk"
+_safe_pkill "stream-transcribe"
+_safe_pkill "web-dashboard.*8420"
+_safe_pkill "capture-window"
+_safe_pkill "monitor.sh"
 
 # Remove symlink
 rm -f "$SESSION_DIR"
