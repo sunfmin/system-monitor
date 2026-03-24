@@ -10,7 +10,11 @@ PREV_SCREENSHOT="${3:-}"
 # Check for dynamic focus target (set by Claude based on conversation context)
 # .focus_target can contain either a window ID (numeric) or a keyword
 SESSION_DIR="$(dirname "$(dirname "$OUTPUT")")"
-FOCUS_FILE="${SESSION_DIR}/.focus_target"
+FOCUS_FILE="${SESSION_DIR}/.runtime/.focus_target"
+# Fallback to old location
+if [ ! -f "$FOCUS_FILE" ]; then
+    FOCUS_FILE="${SESSION_DIR}/.focus_target"
+fi
 FOCUS_WINDOW_ID=""
 if [ -z "$APP_KEYWORD" ] && [ -f "$FOCUS_FILE" ]; then
     FOCUS_VAL="$(cat "$FOCUS_FILE" 2>/dev/null)"
@@ -110,24 +114,22 @@ print(result)
 
 fi  # end of else block (no direct window ID)
 
-TMP_OUTPUT="${OUTPUT}.tmp.png"
+TMP_PNG="${OUTPUT}.tmp.png"
 
 if [ -z "$WINDOW_ID" ]; then
-    screencapture -x "$TMP_OUTPUT"
+    screencapture -x "$TMP_PNG"
 else
-    screencapture -x -l "$WINDOW_ID" "$TMP_OUTPUT"
+    screencapture -x -l "$WINDOW_ID" "$TMP_PNG"
 fi
 
 # Compare with previous screenshot - skip if too similar
-if [ -n "$PREV_SCREENSHOT" ] && [ -f "$PREV_SCREENSHOT" ] && [ -f "$TMP_OUTPUT" ]; then
-    # Use sips to get basic file size comparison as a quick heuristic,
-    # then use python for pixel-level diff if sizes are close
+if [ -n "$PREV_SCREENSHOT" ] && [ -f "$PREV_SCREENSHOT" ] && [ -f "$TMP_PNG" ]; then
     DIFF=$(python3.11 -c "
 from PIL import Image
 import sys
 try:
     img1 = Image.open('$PREV_SCREENSHOT').resize((160,90)).convert('L')
-    img2 = Image.open('$TMP_OUTPUT').resize((160,90)).convert('L')
+    img2 = Image.open('$TMP_PNG').resize((160,90)).convert('L')
     pixels1 = list(img1.getdata())
     pixels2 = list(img2.getdata())
     diff = sum(abs(a-b) for a,b in zip(pixels1,pixels2)) / len(pixels1)
@@ -137,10 +139,13 @@ except:
 " 2>/dev/null)
 
     if [ "$(echo "$DIFF < 5.0" | bc 2>/dev/null)" = "1" ]; then
-        # Too similar, skip
-        rm -f "$TMP_OUTPUT"
+        rm -f "$TMP_PNG"
         exit 1
     fi
 fi
 
-mv "$TMP_OUTPUT" "$OUTPUT"
+# Convert PNG to JPEG with compression (reduces ~3MB PNG to ~200KB JPEG)
+# Output filename is .jpg even though caller may have passed .png extension
+OUTPUT_JPG="${OUTPUT%.png}.jpg"
+sips -s format jpeg -s formatOptions 60 "$TMP_PNG" --out "$OUTPUT_JPG" >/dev/null 2>&1
+rm -f "$TMP_PNG"

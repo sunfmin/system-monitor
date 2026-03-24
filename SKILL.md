@@ -15,12 +15,15 @@ Each session creates a unique directory under `system_monitor/` using a timestam
 `system_monitor/session_YYYYMMDD_HHMMSS/`
 
 Each session directory contains:
-- `screenshots/` — periodic screen captures
+- `screenshots/` — periodic screen captures (JPEG, ~200KB each)
+- `audio.wav` — complete audio recording (16kHz mono 16-bit PCM WAV), finalized on stop
 - `live_raw.jsonl` — final transcription results (JSONL with `sentences` array, one entry per ~20s)
-- `live_partial.json` — current real-time partial (single JSON, overwritten; also pushed via WebSocket)
 - `summary.md` — running summary of observations
-- `.stream.pid`, `.screenshot.pid`, `.dashboard.pid` — PID files
-- `stream.log`, `screenshot.log`, `dashboard.log` — process logs
+- `.runtime/` — runtime files (PIDs, logs, partial text, focus target):
+  - `live_partial.json` — current real-time partial (single JSON, overwritten; also pushed via WebSocket)
+  - `.stream.pid`, `.screenshot.pid`, `.dashboard.pid`, `.monitor.pid` — PID files
+  - `.focus_target` — current screenshot target window ID
+  - `stream.log`, `screenshot.log`, `dashboard.log` — process logs
 
 A symlink `system_monitor/latest` always points to the current active session directory.
 
@@ -252,7 +255,7 @@ When the user asks to switch the screenshot target to a specific app or window (
 
 3. **Write the window ID** to the session's focus target file:
    ```bash
-   echo -n "<window_id>" > system_monitor/latest/.focus_target
+   echo -n "<window_id>" > system_monitor/latest/.runtime/.focus_target
    ```
    The `capture-window.sh` script reads `.focus_target` on each capture cycle. If it contains a numeric window ID, it uses that ID directly via `screencapture -l`.
 

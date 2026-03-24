@@ -260,7 +260,11 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
     private let chunkSec: Double
     private let finalInterval: Int
     private let rawFile: String
+    private let partialDir: String?
     private let t2sScript: String?
+    private let audioFile: String?
+    private var audioFileHandle: FileHandle?
+    private var audioDataSize: UInt32 = 0
 
     // Audio buffer
     private var audioBuffer: [Float] = []
@@ -278,15 +282,82 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
     private var isRunning = true
 
     init(whisper: WhisperManager, wsServer: WebSocketServer, chunkSec: Double,
-         finalInterval: Int, rawFile: String, t2sScript: String?) {
+         finalInterval: Int, rawFile: String, partialDir: String?, t2sScript: String?, audioFile: String?) {
         self.whisper = whisper
         self.wsServer = wsServer
         self.chunkSec = chunkSec
         self.finalInterval = finalInterval
         self.rawFile = rawFile
+        self.partialDir = partialDir
         self.t2sScript = t2sScript
+        self.audioFile = audioFile
         self.samplesPerChunk = Int(16000.0 * chunkSec)
         super.init()
+    }
+
+    /// Initialize WAV file with placeholder header (44 bytes). Data size will be finalized on stop.
+    private func initAudioFile() {
+        guard let path = audioFile else { return }
+        // WAV header: 16kHz, mono, 16-bit PCM
+        let sampleRate: UInt32 = 16000
+        let bitsPerSample: UInt16 = 16
+        let numChannels: UInt16 = 1
+        let byteRate = sampleRate * UInt32(numChannels) * UInt32(bitsPerSample / 8)
+        let blockAlign = numChannels * (bitsPerSample / 8)
+
+        var header = Data(count: 44)
+        // RIFF header
+        header.replaceSubrange(0..<4, with: "RIFF".data(using: .ascii)!)
+        header.replaceSubrange(4..<8, with: withUnsafeBytes(of: UInt32(0).littleEndian) { Data($0) }) // placeholder
+        header.replaceSubrange(8..<12, with: "WAVE".data(using: .ascii)!)
+        // fmt chunk
+        header.replaceSubrange(12..<16, with: "fmt ".data(using: .ascii)!)
+        header.replaceSubrange(16..<20, with: withUnsafeBytes(of: UInt32(16).littleEndian) { Data($0) })
+        header.replaceSubrange(20..<22, with: withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) }) // PCM
+        header.replaceSubrange(22..<24, with: withUnsafeBytes(of: numChannels.littleEndian) { Data($0) })
+        header.replaceSubrange(24..<28, with: withUnsafeBytes(of: sampleRate.littleEndian) { Data($0) })
+        header.replaceSubrange(28..<32, with: withUnsafeBytes(of: byteRate.littleEndian) { Data($0) })
+        header.replaceSubrange(32..<34, with: withUnsafeBytes(of: blockAlign.littleEndian) { Data($0) })
+        header.replaceSubrange(34..<36, with: withUnsafeBytes(of: bitsPerSample.littleEndian) { Data($0) })
+        // data chunk
+        header.replaceSubrange(36..<40, with: "data".data(using: .ascii)!)
+        header.replaceSubrange(40..<44, with: withUnsafeBytes(of: UInt32(0).littleEndian) { Data($0) }) // placeholder
+
+        FileManager.default.createFile(atPath: path, contents: header)
+        audioFileHandle = FileHandle(forWritingAtPath: path)
+        audioFileHandle?.seekToEndOfFile()
+        audioDataSize = 0
+        fputs("Audio recording to: \(path)\n", stderr)
+    }
+
+    /// Write float32 samples as 16-bit PCM to WAV file
+    private func writeAudioSamples(_ samples: [Float]) {
+        guard let fh = audioFileHandle else { return }
+        var pcmData = Data(capacity: samples.count * 2)
+        for sample in samples {
+            let clamped = max(-1.0, min(1.0, sample))
+            let int16 = Int16(clamped * 32767.0)
+            withUnsafeBytes(of: int16.littleEndian) { pcmData.append(contentsOf: $0) }
+        }
+        fh.write(pcmData)
+        audioDataSize += UInt32(pcmData.count)
+    }
+
+    /// Finalize WAV header with actual data size
+    func finalizeAudioFile() {
+        guard let fh = audioFileHandle else { return }
+        // Update data chunk size at offset 40
+        fh.seek(toFileOffset: 40)
+        fh.write(withUnsafeBytes(of: audioDataSize.littleEndian) { Data($0) })
+        // Update RIFF chunk size at offset 4
+        let riffSize = audioDataSize + 36
+        fh.seek(toFileOffset: 4)
+        fh.write(withUnsafeBytes(of: riffSize.littleEndian) { Data($0) })
+        fh.synchronizeFile()
+        fh.closeFile()
+        audioFileHandle = nil
+        let mb = Double(audioDataSize) / 1_048_576.0
+        fputs("Audio file finalized: \(String(format: "%.1f", mb)) MB, \(String(format: "%.0f", Double(audioDataSize) / 32000.0))s\n", stderr)
     }
 
     func start() async throws {
@@ -315,6 +386,8 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
 
         try await stream.startCapture()
         fputs("Audio capture started (16kHz mono, chunk=\(chunkSec)s)\n", stderr)
+
+        initAudioFile()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.processingLoop()
@@ -373,6 +446,7 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
                 bufferLock.lock()
                 audioBuffer.append(contentsOf: samples)
                 bufferLock.unlock()
+                writeAudioSamples(samples)
             }
         } else {
             let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
@@ -400,6 +474,7 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
                     bufferLock.lock()
                     audioBuffer.append(contentsOf: samples)
                     bufferLock.unlock()
+                    writeAudioSamples(samples)
                 }
             }
         }
@@ -578,8 +653,8 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
     }
 
     private func writePartialFile(timestamp: String, tsEpoch: Double, text: String) {
-        // Derive partial file path from raw file path
-        let dir = (rawFile as NSString).deletingLastPathComponent
+        // Use partialDir if set, otherwise derive from raw file path
+        let dir = partialDir ?? (rawFile as NSString).deletingLastPathComponent
         let partialFile = (dir as NSString).appendingPathComponent("live_partial.json")
         let json = jsonString(["t": timestamp, "ts": tsEpoch, "text": text] as [String: Any])
         let tmp = partialFile + ".tmp"
@@ -630,14 +705,16 @@ class StreamingTranscriber: NSObject, SCStreamOutput {
 // MARK: - Entry Point
 
 func parseArgs() -> (model: String, chunkSec: Double, finalInterval: Int,
-                     rawFile: String, t2sScript: String?, wsPort: UInt16) {
+                     rawFile: String, partialDir: String?, t2sScript: String?, wsPort: UInt16, audioFile: String?) {
     let args = CommandLine.arguments
     var model = ""
     var chunkSec = 2.0
     var finalInterval = 10  // 10 x 2s = 20s (leave room for carryover within whisper's 30s max)
     var rawFile = "live_raw.jsonl"
+    var partialDir: String? = nil
     var t2sScript: String? = nil
     var wsPort: UInt16 = 8421
+    var audioFile: String? = nil
 
     var i = 1
     while i < args.count {
@@ -654,6 +731,10 @@ func parseArgs() -> (model: String, chunkSec: Double, finalInterval: Int,
             if i + 1 < args.count { t2sScript = args[i + 1]; i += 2 } else { i += 1 }
         case "--ws-port":
             if i + 1 < args.count, let v = UInt16(args[i + 1]) { wsPort = v; i += 2 } else { i += 1 }
+        case "--audio-file":
+            if i + 1 < args.count { audioFile = args[i + 1]; i += 2 } else { i += 1 }
+        case "--partial-dir":
+            if i + 1 < args.count { partialDir = args[i + 1]; i += 2 } else { i += 1 }
         // Legacy args (ignored)
         case "--partial-file":
             i += 2
@@ -664,15 +745,12 @@ func parseArgs() -> (model: String, chunkSec: Double, finalInterval: Int,
 
     if model.isEmpty {
         fputs("Usage: stream-audio-whisper --model <path> [--chunk-sec 2] [--final-interval 5]\n", stderr)
-        fputs("       [--raw-file <path>] [--t2s-script <path>] [--ws-port 8421]\n", stderr)
+        fputs("       [--raw-file <path>] [--t2s-script <path>] [--ws-port 8421] [--audio-file <path>]\n", stderr)
         _exit(1)
     }
 
-    return (model, chunkSec, finalInterval, rawFile, t2sScript, wsPort)
+    return (model, chunkSec, finalInterval, rawFile, partialDir, t2sScript, wsPort, audioFile)
 }
-
-signal(SIGINT) { _ in fputs("\nStopping...\n", stderr); _exit(0) }
-signal(SIGTERM) { _ in fputs("\nStopping...\n", stderr); _exit(0) }
 
 let config = parseArgs()
 
@@ -687,8 +765,21 @@ let transcriber = StreamingTranscriber(
     chunkSec: config.chunkSec,
     finalInterval: config.finalInterval,
     rawFile: config.rawFile,
-    t2sScript: config.t2sScript
+    partialDir: config.partialDir,
+    t2sScript: config.t2sScript,
+    audioFile: config.audioFile
 )
+
+signal(SIGINT) { _ in
+    fputs("\nStopping...\n", stderr)
+    transcriber.finalizeAudioFile()
+    _exit(0)
+}
+signal(SIGTERM) { _ in
+    fputs("\nStopping...\n", stderr)
+    transcriber.finalizeAudioFile()
+    _exit(0)
+}
 
 Task {
     do {

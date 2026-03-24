@@ -731,9 +731,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                                 items.append({"type": "text", "time": "", "text": line})
             # Screenshots
             ss_dir = os.path.join(BASE_DIR, "screenshots")
-            for f in sorted(glob.glob(os.path.join(ss_dir, "*.png"))):
+            for f in sorted(glob.glob(os.path.join(ss_dir, "screen_*.*"))):
                 name = os.path.basename(f)
-                parts = name.replace("screen_", "").replace(".png", "").split("_")
+                base = name.replace("screen_", "").rsplit(".", 1)[0]
+                parts = base.split("_")
                 if len(parts) == 2 and len(parts[1]) == 6:
                     t = parts[1]
                     time_str = f"{t[0:2]}:{t[2:4]}:{t[4:6]}"
@@ -747,7 +748,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            partial_file = os.path.join(BASE_DIR, "live_partial.json")
+            # Check .runtime/ first, fallback to main dir
+            partial_file = os.path.join(BASE_DIR, ".runtime", "live_partial.json")
+            if not os.path.exists(partial_file):
+                partial_file = os.path.join(BASE_DIR, "live_partial.json")
             data = "{}"
             if os.path.exists(partial_file):
                 try:
@@ -792,12 +796,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             ss_dir = os.path.join(BASE_DIR, "screenshots")
-            files = sorted(glob.glob(os.path.join(ss_dir, "*.png")))
+            files = sorted(glob.glob(os.path.join(ss_dir, "screen_*.*")))
             result = []
             for f in files:
                 name = os.path.basename(f)
-                # Extract time from screen_YYYYMMDD_HHMMSS.png
-                parts = name.replace("screen_", "").replace(".png", "").split("_")
+                # Extract time from screen_YYYYMMDD_HHMMSS.{jpg,png}
+                base = name.replace("screen_", "").rsplit(".", 1)[0]
+                parts = base.split("_")
                 if len(parts) == 2 and len(parts[1]) == 6:
                     t = parts[1]
                     time_str = f"{t[0:2]}:{t[2:4]}:{t[4:6]}"
@@ -809,7 +814,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             ss_dir = os.path.join(BASE_DIR, "screenshots")
-            files = sorted(glob.glob(os.path.join(ss_dir, "*.png")), reverse=True)
+            files = sorted(glob.glob(os.path.join(ss_dir, "screen_*.*")), reverse=True)
             result = {"path": files[0] if files else None}
             self.wfile.write(json.dumps(result).encode())
 
